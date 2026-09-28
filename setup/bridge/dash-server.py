@@ -122,12 +122,11 @@ def worker_state(now):
     return ("STALLED (15m+ silent)", "red", sub + " · reaper kills at 30m")
 
 
-def activity_feed(max_events=10, frag=170):
-    """The 'token streaming' panel: the worker's last thinking / replies / tool
-    calls, parsed from the newest episode session tail (~48KB). Newest last."""
+def feed_json(max_events=14, frag=170):
+    """Parse the newest episode session tail into events: [{ts, kind, text}]."""
     _, cur = current_episode()
     if not cur:
-        return "<div class='log'>(no episode session yet)</div>"
+        return []
     try:
         with open(cur[1], "rb") as f:
             size = os.fstat(f.fileno()).st_size
@@ -135,9 +134,9 @@ def activity_feed(max_events=10, frag=170):
             raw = f.read().decode("utf-8", "replace")
         lines = raw.splitlines()
         if raw and not raw.lstrip().startswith("{") and len(lines) > 1:
-            lines = lines[1:]  # drop partial line from the seek boundary
+            lines = lines[1:]
     except OSError:
-        return "<div class='log'>(unreadable)</div>"
+        return []
     events = []
     for line in lines[-48:]:
         try:
@@ -151,21 +150,24 @@ def activity_feed(max_events=10, frag=170):
                 continue
             t = p.get("type")
             if t == "thinking" and (p.get("thinking") or "").strip():
-                events.append((ts, "thinking", p["thinking"].strip()))
+                events.append({"ts": ts, "kind": "thinking", "text": p["thinking"].strip().replace("\n", " ")[:frag]})
             elif t == "text" and (p.get("text") or "").strip():
-                events.append((ts, "says", p["text"].strip()))
+                events.append({"ts": ts, "kind": "says", "text": p["text"].strip().replace("\n", " ")[:frag]})
             elif t == "toolCall":
                 name = p.get("name") or "?"
                 a = p.get("arguments") or {}
-                if "command" in a:
-                    frag_cmd = str(a["command"])[:110]
-                else:
-                    frag_cmd = json.dumps(a, default=str)[:110]
-                events.append((ts, "tool", f"{name} {frag_cmd}"))
+                c = str(a.get("command"))[:frag] if "command" in a else json.dumps(a, default=str)[:frag]
+                events.append({"ts": ts, "kind": "tool", "text": f"{name} {c}"})
+    return events[-max_events:]
+
+
+def activity_feed(max_events=10, frag=170):
+    """The 'token streaming' panel: the worker's last thinking / replies / tool
+    calls, parsed from the newest episode session tail (~48KB). Newest last."""
+    ev = feed_json(max_events, frag)
     out = []
-    for ts, kind, txt in events[-max_events:]:
-        txt = txt.replace("\n", " ")[:frag]
-        out.append(f"<div class='log'><span class=ts>{ts}</span> [{html.escape(kind)}] {html.escape(txt)}</div>")
+    for e in ev:
+        out.append(f"<div class='log'><span class=ts>{html.escape(e['ts'])}</span> [{html.escape(e['kind'])}] {html.escape(e['text'])}</div>")
     return "".join(out) or "<div class='log'>(no activity parsed yet — turn may be mid-API-call)</div>"
 
 
@@ -279,7 +281,7 @@ def build_page():
 
     return f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'>
-<meta http-equiv=refresh content=15>
+<meta http-equiv=refresh content=30>
 <title>qb2 ops dash</title><style>
 body{{background:#0b0f14;color:#d1d5db;font:14px/1.45 ui-monospace,monospace;margin:0;padding:12px}}
 h1{{font-size:15px;color:#93c5fd;margin:2px 0 8px}} h2{{font-size:12px;color:#93c5fd;margin:14px 0 4px;text-transform:uppercase;letter-spacing:.05em}}
@@ -290,10 +292,24 @@ h1{{font-size:15px;color:#93c5fd;margin:2px 0 8px}} h2{{font-size:12px;color:#93
 .alert{{background:#450a0a;border:1px solid #ef4444;color:#fecaca;padding:8px;border-radius:8px;margin:8px 0}}
 .log{{white-space:pre-wrap;border-left:2px solid #1f2937;padding:1px 6px;margin:1px 0;font-size:12px;color:#cbd5e1;word-break:break-all}}
 .ts{{color:#64748b;margin-right:6px}} .meta{{color:#64748b;font-size:11px}}</style></head><body>
-<h1>qb2 · tt-automatic ops · <span class=meta>refreshed {time.strftime('%H:%M:%S')} UTC · auto-refresh 15s</span></h1>
+<h1>qb2 · tt-automatic ops · <span class=meta>refreshed {time.strftime('%H:%M:%S')} UTC · chips 30s · live feed 2.5s</span></h1>
 {banner}
 <h2>status</h2><div class=grid>{''.join(chips)}</div>
-<h2>worker activity (live — thinking / replies / tool calls from the current episode)</h2>{activity_feed()}
+<h2>worker activity (live — thinking / replies / tool calls, updates every 2.5s without reload)</h2><div id=feed>{activity_feed(14)}</div>
+<script>
+(function(){{
+  const feed=document.getElementById('feed');
+  const render=j=>j.map(e=>"<div class=log><span class=ts>"+e.ts+"</span> ["+e.kind+"] "+e.text.replace(/&/g,'&amp;').replace(/</g,'&lt;')+"</div>").join('');
+  async function poll(){{
+    try{{
+      const r=await fetch('/dash/feed',{{cache:'no-store'}});
+      if(r.ok){{const j=await r.json();const h=render(j);if(h)feed.innerHTML=h;}}
+    }}catch(e){{}}
+    setTimeout(poll,2500);
+  }}
+  poll();
+}})();
+</script>
 <h2>driver log</h2>{logdiv(drvlog)}
 <h2>git (q = worker tree · c = contrib)</h2>{git_html}
 <h2>experiment ledger (tail)</h2>{led_html}
@@ -314,6 +330,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/") or "/"
+        if path == "/dash/feed":
+            body = json.dumps(feed_json(14)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path not in ("/dash", "/dash/"):
             self.send_response(404)
             self.send_header("Content-Length", "0")
