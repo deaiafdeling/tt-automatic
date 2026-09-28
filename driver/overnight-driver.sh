@@ -1,21 +1,20 @@
 #!/bin/bash
 # Auto-continue driver v2 for the overnight pi loop — EPISODIC (Ralph/nightcrawler
-TTA_HOME="${TTA_HOME:-$HOME}"   # root of your work tree; scripts below are relative to it
 # pattern): fresh pi context per turn, all state on disk (GOAL_BRIEF + KANBAN + git).
 # Judges each finished turn; on unproductive episodes ESCALATES (re-orient episode)
 # instead of halting; halts only on repeated ignored decisions, rebuild exhaustion,
 # or window end. Alert relay: ~/pi-overnight2-ALERT.txt via pi_watchdog §5.
 # Heartbeat: ~/pi-overnight2-driver.heartbeat (watchdog §6 alert if stale).
 set -u
-Q_TREE=${TTA_HOME}/tt-qwen-3.8-flash-next
-C_TREE=${TTA_HOME}/tt-contrib
-SESS_GLOB="${TTA_HOME}/.pi/agent/sessions/*/*_T24-overnight2-E*.jsonl"
-STATE=${TTA_HOME}/pi-overnight2-driver.state
-ALERT=${TTA_HOME}/pi-overnight2-ALERT.txt
-LOG=${TTA_HOME}/pi-overnight2-driver.log
-HEART=${TTA_HOME}/pi-overnight2-driver.heartbeat
-WIN_FLAG=${TTA_HOME}/pi-overnight2-WINDOW_LIVE
-EPFILE=${TTA_HOME}/pi-overnight2-EP
+Q_TREE=/home/ttuser/tt-qwen-3.8-flash-next
+C_TREE=/home/ttuser/tt-contrib
+SESS_GLOB='/home/ttuser/.pi/agent/sessions/--home-ttuser-tt-qwen-3.8-flash-next--/*_T24-overnight2-E*.jsonl'
+STATE=/home/ttuser/pi-overnight2-driver.state
+ALERT=/home/ttuser/pi-overnight2-ALERT.txt
+LOG=/home/ttuser/pi-overnight2-driver.log
+HEART=/home/ttuser/pi-overnight2-driver.heartbeat
+WIN_FLAG=/home/ttuser/pi-overnight2-WINDOW_LIVE
+EPFILE=/home/ttuser/pi-overnight2-EP
 WIN_END=$(date -d "${1:-2026-09-28 14:55:00 UTC}" +%s)
 TMUX_WIN=pi-chat:overnight2
 say(){ echo "[$(date +%H:%M:%S)] $*" >> "$LOG"; }
@@ -105,7 +104,7 @@ while :; do
         alert "overnight2 asked the same decision class 3x without progressing — halting for the user: $Q"
         rm -f "$WIN_FLAG"; break
       fi
-      answer_decision "$Q" > ${TTA_HOME}/pi-overnight2-ANSWER.txt
+      answer_decision "$Q" > /home/ttuser/pi-overnight2-ANSWER.txt
       alert "overnight2 decision AUTO-ANSWERED (e/acc-go, ask#$N): $Q"
       ;;&  # fall through to the weak/respawn logic below
     *OVERNIGHT_WINDOW_COMPLETE*)
@@ -120,6 +119,10 @@ while :; do
   elif [ "$H" = "$PH" ]; then WEAK=$((WEAK+1)); say "weak++ (identical last text)"
   elif [ "$GOT_COMMIT" = 0 ] && [ "$GOT_KANBAN" = 0 ] && [ "$GOT_LEDGER" = 0 ] && [ "$DELTA" -lt 2000 ]; then
     WEAK=$((WEAK+1)); say "weak++ (no commit/kanban, tiny turn Δ${DELTA}B)"
+  elif [ "$GOT_COMMIT" = 0 ] && [ "$GOT_KANBAN" = 1 ] && [ "$DELTA" -lt 30000 ]; then
+    # shallow-turn tripwire: a board line alone with no commit/ledger and a tiny
+    # session = the model ended its turn early (depth-contract violation)
+    WEAK=$((WEAK+1)); say "weak++ (shallow turn: board-line only, Δ${DELTA}B — depth contract violated)"
   else
     WEAK=0; echo 0 > "$STATE".rebuilds
   fi
@@ -134,12 +137,12 @@ while :; do
     echo $((REB+1)) > "$STATE".rebuilds
     echo 0 > "$STATE".weak
     EP=$(cat "$EPFILE"); echo $((EP+1)) > "$EPFILE"
-    touch ${TTA_HOME}/pi-overnight2-REORIENT
+    touch /home/ttuser/pi-overnight2-REORIENT
     alert "overnight2: 3 unproductive episodes — ESCALATING to re-orient episode E$((EP+1)) (rebuild $((REB+1))/$REBUILD_MAX), not halting."
   fi
   say "turn judged: commit=$GOT_COMMIT kanban=$GOT_KANBAN Δ=${DELTA}B weak=$WEAK ep=$(cat "$EPFILE") rebuilds=$(cat "$STATE".rebuilds) — continuing"
   EP=$(cat "$EPFILE"); echo $((EP+1)) > "$EPFILE"   # next episode id
-  RESPAWN="bash ${TTA_HOME}/pi-overnight2-pane.sh"
+  RESPAWN="bash /home/ttuser/pi-overnight2-pane.sh"
   if ! tmux list-windows -t pi-chat -F '#{window_name}' 2>/dev/null | grep -qx overnight2; then
     tmux new-window -t pi-chat -n overnight2 "$RESPAWN" \; 2>>"$LOG"
   else
