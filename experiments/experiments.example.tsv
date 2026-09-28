@@ -1,0 +1,8 @@
+date	area	metric	value	unit	status	run_id	description
+2026-09-26	decode	server_tok_s	63.6	tok/s	published	-	posted baseline rev e7af3a7ea (FUSED_OFF era)
+2026-09-27	decode	server_tok_s	63.79	tok/s	discard	-	T8b qsa-arm canonical WASH (within spread; recorded not posted)
+2026-09-27	decode	server_tok_s	70.6	tok/s	keep	-	T8b2 wrap-arm steady state (canonical 3-run)
+2026-09-27	decode	lmx_out_tok_s	69.3	tok/s	published	cmuk8fmp70ebilq01z0xunzbu	verified+approved; beats 63.6 record
+2026-09-27	prefill	synthetic_tok_s	771	tok/s	keep	-	T22 --long-chunks 128-row, 2714-tok synthetic (+49%)
+2026-09-27	prefill	lmx_prefill_tok_s	501.6	tok/s	published	cmukc7vje0eerlq01wqmslsam	+37% over posted 371; 69.0 out; awaiting verify
+2026-09-28	prefill	harness_tok_s	2500	tok/reference-baseline	reference	-	D2b dump-harness chunked prefill = headroom proof (not serve-comparable)
