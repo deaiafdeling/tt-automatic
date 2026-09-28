@@ -43,8 +43,11 @@ def run(cmd, timeout=6):
         return f"(err: {e})"
 
 
-def unit_state(name):
-    return run(f"systemctl is-active {name} 2>/dev/null", 4) or "unknown"
+def unit_state(name, bus="user"):
+    """Query the correct systemd bus: user units need --user (querying the system
+    bus for user units returns 'inactive' — the bug that made the dash lie)."""
+    flag = "--user " if bus == "user" else ""
+    return run(f"systemctl {flag}is-active {name} 2>/dev/null", 4) or "unknown"
 
 
 def file_age(path):
@@ -96,6 +99,76 @@ def current_episode():
     return ep, best
 
 
+def worker_state(now):
+    """Deterministic worker state machine: (state, color, detail).
+    Truth sources: pi process existence + newest episode session mtime."""
+    _, cur = current_episode()
+    w = pi_worker()
+    age = None
+    sub = f"ep counter {current_episode()[0]}"
+    if cur:
+        age = now - int(os.stat(cur[1]).st_mtime)
+        sub = f"E{cur[0]} · {fsize(cur[1])//1024}KB · last write {age}s ago"
+    if w:
+        sub += f" · pid {w[0]} up {w[1]}"
+    if w is None and (age is None or age > 90):
+        return ("DEAD (respawn overdue)", "red", sub)
+    if w is None:
+        return ("BETWEEN (respawning)", "amber", sub)
+    if age is None or age < 180:
+        return ("WORKING", "green", sub)
+    if age < 900:
+        return ("THINKING (long API turn)", "amber", sub + " · no writes yet, normal for big turns")
+    return ("STALLED (15m+ silent)", "red", sub + " · reaper kills at 30m")
+
+
+def activity_feed(max_events=10, frag=170):
+    """The 'token streaming' panel: the worker's last thinking / replies / tool
+    calls, parsed from the newest episode session tail (~48KB). Newest last."""
+    _, cur = current_episode()
+    if not cur:
+        return "<div class='log'>(no episode session yet)</div>"
+    try:
+        with open(cur[1], "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            f.seek(max(0, size - 49152))
+            raw = f.read().decode("utf-8", "replace")
+        lines = raw.splitlines()
+        if raw and not raw.lstrip().startswith("{") and len(lines) > 1:
+            lines = lines[1:]  # drop partial line from the seek boundary
+    except OSError:
+        return "<div class='log'>(unreadable)</div>"
+    events = []
+    for line in lines[-48:]:
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        m = d.get("message") or {}
+        ts = str(d.get("timestamp") or "")[11:19]
+        for p in (m.get("content") or []):
+            if not isinstance(p, dict):
+                continue
+            t = p.get("type")
+            if t == "thinking" and (p.get("thinking") or "").strip():
+                events.append((ts, "thinking", p["thinking"].strip()))
+            elif t == "text" and (p.get("text") or "").strip():
+                events.append((ts, "says", p["text"].strip()))
+            elif t == "toolCall":
+                name = p.get("name") or "?"
+                a = p.get("arguments") or {}
+                if "command" in a:
+                    frag_cmd = str(a["command"])[:110]
+                else:
+                    frag_cmd = json.dumps(a, default=str)[:110]
+                events.append((ts, "tool", f"{name} {frag_cmd}"))
+    out = []
+    for ts, kind, txt in events[-max_events:]:
+        txt = txt.replace("\n", " ")[:frag]
+        out.append(f"<div class='log'><span class=ts>{ts}</span> [{html.escape(kind)}] {html.escape(txt)}</div>")
+    return "".join(out) or "<div class='log'>(no activity parsed yet — turn may be mid-API-call)</div>"
+
+
 def serve_health():
     code = run("curl -s --max-time 4 -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health", 6)
     tok = ""
@@ -130,7 +203,7 @@ def build_page():
     banner = ""
 
     # driver (shift boss)
-    drv = unit_state("pi-overnight2-driver.service")
+    drv = unit_state("pi-overnight2-driver.service", "user")
     hage = file_age(HEART)
     window = os.path.exists(WIN_FLAG)
     drv_color = "green" if drv == "active" and hage is not None and hage < 300 else ("amber" if drv == "active" else "red")
@@ -146,22 +219,13 @@ def build_page():
     if window and hage is not None and hage > 3600:
         banner = "<div class='alert'>⚠ window flag live but driver heartbeat stale — supervisor may be dead</div>"
 
-    # worker
-    w = pi_worker()
-    if cur:
-        age = now - int(os.stat(cur[1]).st_mtime)
-        sz = fsize(cur[1])
-        state, color = ("WORKING", "green") if age < 180 else (("QUIET", "amber") if age < 600 else ("STALLED", "red"))
-        sub = f"E{cur[0]} · {sz//1024}KB · last write {age}s ago"
-        if w:
-            sub += f" · pid {w[0]} up {w[1]}"
-        chips.append(chip("pi worker", state, color, sub))
-    else:
-        chips.append(chip("pi worker", "NO SESSION", "red", f"ep counter {ep}"))
+    # worker (state machine — proc existence + session-write truth)
+    wst, wcolor, wsub = worker_state(now)
+    chips.append(chip("pi worker", wst, wcolor, wsub))
 
     # serve
     sc, tok = serve_health()
-    su = unit_state("qwen38-flash-next.service")
+    su = unit_state("qwen38-flash-next.service", "system")
     chips.append(chip("Flash-Next serve", "UP" if sc == "200" else sc, "green" if sc == "200" else "red",
                       f"unit {su}{tok}"))
 
@@ -172,14 +236,15 @@ def build_page():
     chips.append(chip("exl3q convert48", "RUNNING" if c_ok else "STALLED?", "green" if c_ok else "amber",
                       ctail[0][-90:] if ctail else ""))
 
-    # access planes
+    # access planes (user units on the user bus; ssh removed 28 Sep)
     for nm, unit, port in (("phone bridge", "pi-chat.service", 7011),
-                           ("ttyd tmux", "ttyd-pi-chat.service", 7682),
-                           ("ttyd ssh", "ttyd-ssh.service", 7683)):
-        st = unit_state(unit)
+                           ("ttyd tmux", "ttyd-pi-chat.service", 7682)):
+        st = unit_state(unit, "user")
         chips.append(chip(nm, st, "green" if st == "active" else "red", f":{port}"))
-    tun = unit_state("cloudflared-tunnel.service")
-    chips.append(chip("cloudflared tunnel", tun, "green" if tun == "active" else "red"))
+    tun = unit_state("cloudflared-tunnel.service", "user")
+    chips.append(chip("cloudflared tunnel", tun, "green" if tun == "active" else "red", "/dash + model routes"))
+    dsh = unit_state("qb2-dash.service", "user")
+    chips.append(chip("ops dashboard (this page)", dsh, "green" if dsh == "active" else "red", ":7015"))
 
     # active driver alert (fresh <2h)
     aage = file_age(ALERT)
@@ -224,10 +289,11 @@ h1{{font-size:15px;color:#93c5fd;margin:2px 0 8px}} h2{{font-size:12px;color:#93
 .dot{{width:9px;height:9px;border-radius:50%;margin-top:5px;flex-shrink:0}}
 .alert{{background:#450a0a;border:1px solid #ef4444;color:#fecaca;padding:8px;border-radius:8px;margin:8px 0}}
 .log{{white-space:pre-wrap;border-left:2px solid #1f2937;padding:1px 6px;margin:1px 0;font-size:12px;color:#cbd5e1;word-break:break-all}}
-.meta{{color:#64748b;font-size:11px}}</style></head><body>
+.ts{{color:#64748b;margin-right:6px}} .meta{{color:#64748b;font-size:11px}}</style></head><body>
 <h1>qb2 · tt-automatic ops · <span class=meta>refreshed {time.strftime('%H:%M:%S')} UTC · auto-refresh 15s</span></h1>
 {banner}
 <h2>status</h2><div class=grid>{''.join(chips)}</div>
+<h2>worker activity (live — thinking / replies / tool calls from the current episode)</h2>{activity_feed()}
 <h2>driver log</h2>{logdiv(drvlog)}
 <h2>git (q = worker tree · c = contrib)</h2>{git_html}
 <h2>experiment ledger (tail)</h2>{led_html}
@@ -242,18 +308,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _authed(self):
-        try:
-            cred = open(CRED, "rb").read().strip()
-        except OSError:
-            return False
-        h = self.headers.get("Authorization") or ""
-        if not h.startswith("Basic "):
-            return False
-        try:
-            supplied = base64.b64decode(h[6:]).strip()
-        except Exception:
-            return False
-        return hmac.compare_digest(supplied, cred)
+        # 28 Sep user directive: dash is public (no login). Access control happens
+        # at the tunnel/LAN layer. Kept as a hook in case auth is ever re-wanted.
+        return True
 
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/") or "/"
@@ -278,5 +335,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"dash on :{PORT} (basic auth)", flush=True)
+    print(f"dash on :{PORT} (no auth)", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
