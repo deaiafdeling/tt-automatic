@@ -94,6 +94,7 @@ while :; do
   CC0=$(cat "$STATE"); KB0=$(cat "$STATE".kb); LG0=$(cat "$STATE".lg 2>/dev/null || echo x); SZ0=$(cat "$STATE".size)
   GOT_COMMIT=0; [ "$CC1" != "$CC0" ] && GOT_COMMIT=1
   GOT_KANBAN=0; [ "$KB1" != "$KB0" ] && GOT_KANBAN=1
+  GOT_LEDGER=0; [ "${LG1:-x}" != "${LG0:-y}" ] && GOT_LEDGER=1
   DELTA=$((SZ1 - SZ0)); [ "$DELTA" -lt 0 ] && DELTA=0
   [ "$GOT_COMMIT" = 1 ] || [ "$GOT_KANBAN" = 1 ] && echo 0 > "$STATE".dec
   case "$TXT" in
