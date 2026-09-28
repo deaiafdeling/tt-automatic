@@ -14,9 +14,19 @@ import hmac
 import html
 import json
 import os
+import re
 import subprocess
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo(os.environ.get("DASH_TZ", "Europe/Amsterdam"))
+    TZ_LABEL = datetime.now(LOCAL_TZ).strftime("%Z")
+except Exception:  # tzdata missing → fixed +02:00 fallback
+    LOCAL_TZ = timezone(offset=__import__("datetime").timedelta(hours=2))
+    TZ_LABEL = "UTC+02"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -48,6 +58,39 @@ def unit_state(name, bus="user"):
     bus for user units returns 'inactive' — the bug that made the dash lie)."""
     flag = "--user " if bus == "user" else ""
     return run(f"systemctl {flag}is-active {name} 2>/dev/null", 4) or "unknown"
+
+
+def utc_to_local(ts):
+    """ISO-UTC timestamp string → local HH:MM:SS (operator timezone). Falls back
+    to the raw slice if parsing fails."""
+    try:
+        s = str(ts)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(LOCAL_TZ).strftime("%H:%M:%S")
+    except Exception:
+        return str(ts)[11:19]
+
+
+def conv_log_times(lines):
+    """Driver-log lines carry box-local (UTC) [HH:MM:SS] prefixes — relabel to
+    the operator's timezone so the log matches the chips."""
+    out = []
+    for l in lines:
+        m = re.match(r"^\[(\d{2}:\d{2}:\d{2})\](.*)$", l)
+        if m:
+            try:
+                hh, mm, ss = (int(x) for x in m.group(1).split(":"))
+                utc = datetime.now(timezone.utc).replace(hour=hh, minute=mm, second=ss, microsecond=0)
+                out.append(f"[{utc.astimezone(LOCAL_TZ).strftime('%H:%M:%S')}]{m.group(2)}")
+                continue
+            except Exception:
+                pass
+        out.append(l)
+    return out
 
 
 def file_age(path):
@@ -144,7 +187,7 @@ def feed_json(max_events=14, frag=170):
         except Exception:
             continue
         m = d.get("message") or {}
-        ts = str(d.get("timestamp") or "")[11:19]
+        ts = utc_to_local(d.get("timestamp") or "")
         for p in (m.get("content") or []):
             if not isinstance(p, dict):
                 continue
@@ -257,7 +300,7 @@ def build_page():
             pass
 
     # driver log tail
-    drvlog = tail_lines(os.path.join(HOME, "pi-overnight2-driver.log"), 14)
+    drvlog = conv_log_times(tail_lines(os.path.join(HOME, "pi-overnight2-driver.log"), 12))
 
     # git tails
     gq = run(f"git -C {Q_TREE} log --oneline -6", 5).splitlines()
@@ -292,7 +335,7 @@ h1{{font-size:15px;color:#93c5fd;margin:2px 0 8px}} h2{{font-size:12px;color:#93
 .alert{{background:#450a0a;border:1px solid #ef4444;color:#fecaca;padding:8px;border-radius:8px;margin:8px 0}}
 .log{{white-space:pre-wrap;border-left:2px solid #1f2937;padding:1px 6px;margin:1px 0;font-size:12px;color:#cbd5e1;word-break:break-all}}
 .ts{{color:#64748b;margin-right:6px}} .meta{{color:#64748b;font-size:11px}}</style></head><body>
-<h1>qb2 · tt-automatic ops · <span class=meta>refreshed {time.strftime('%H:%M:%S')} UTC · chips 30s · live feed 2.5s</span></h1>
+<h1>qb2 · tt-automatic ops · <span class=meta>refreshed {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} {TZ_LABEL} · chips 30s · live feed 2.5s</span></h1>
 {banner}
 <h2>status</h2><div class=grid>{''.join(chips)}</div>
 <h2>worker activity (live — thinking / replies / tool calls, updates every 2.5s without reload)</h2><div id=feed>{activity_feed(14)}</div>
