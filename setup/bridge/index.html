@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-chat</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui,-apple-system,sans-serif; background:#0b0e14; color:#dbe2ef; }
+  header { padding:10px 14px; background:#11151f; border-bottom:1px solid #232a3b; display:flex; align-items:center; gap:8px; position:sticky; top:0; z-index:5;}
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  #status { font-size:11px; color:#8fa3c8; margin-left:auto; }
+  #log { padding:12px; padding-bottom:96px; }
+  .msg { margin:0 0 12px; }
+  .msg .who { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#8fa3c8; margin-bottom:3px; }
+  .msg .who.me { color:#6fc98f; }
+  .bubble { background:#161c2a; border:1px solid #232a3b; border-radius:12px; padding:9px 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .msg.me .bubble { background:#12241a; border-color:#1f3d2a; }
+  .tools { font-size:12px; color:#8fa3c8; margin:2px 0 10px; white-space:pre-wrap; }
+  #bar { position:fixed; bottom:0; left:0; right:0; background:#11151f; border-top:1px solid #232a3b; display:flex; gap:8px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); }
+  input#msg { flex:1; background:#0b0e14; border:1px solid #232a3b; color:#dbe2ef; border-radius:10px; padding:10px 12px; font:inherit; }
+  button { background:#2d5bd7; color:#fff; border:0; border-radius:10px; padding:10px 16px; font:inherit; font-weight:600; }
+  button:disabled { opacity:.5; }
+  #convline { font-size:11px; color:#8fa3c8; }
+  .err { color:#ff8d8d; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pi-chat</h1>
+  <span id="convline"></span>
+  <span id="status">·</span>
+</header>
+<div id="log"></div>
+<div id="bar">
+  <input id="msg" type="text" placeholder="Message pi… (TT bring-up agent on QB2)" autocomplete="off">
+  <button id="send">Send</button>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const conv = location.hash.slice(1) || ('c' + crypto.randomUUID().slice(0, 8));
+if (!location.hash) location.hash = conv;
+$('#convline').textContent = 'conv ' + conv;
+let key = localStorage.getItem('pichat_key') || '';
+const log = $('#log'), input = $('#msg'), btn = $('#send'), status = $('#status');
+function esc(s) { return s; }
+function addMsg(who, text, cls) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + (cls || '');
+  d.innerHTML = `<div class="who ${cls === 'me' ? 'me' : ''}">${esc(who)}</div><div class="bubble"></div>`;
+  d.querySelector('.bubble').textContent = text;
+  log.appendChild(d);
+  window.scrollTo(0, document.body.scrollHeight);
+  return d.querySelector('.bubble');
+}
+function render() {
+  while (log.firstChild) log.removeChild(log.firstChild);
+  const saved = JSON.parse(localStorage.getItem('pichat_log_' + conv) || '[]');
+  for (const m of saved) addMsg(m.who, m.text, m.cls);
+}
+function save(who, text, cls) {
+  const k = 'pichat_log_' + conv;
+  const saved = JSON.parse(localStorage.getItem(k) || '[]');
+  saved.push({who, text, cls});
+  localStorage.setItem(k, JSON.stringify(saved.slice(-200)));
+}
+async function send() {
+  const text = input.value.trim();
+  if (!text) return;
+  if (!key) {
+    key = prompt('Paste the pi-chat key:') || '';
+    if (!key) return;
+    localStorage.setItem('pichat_key', key);
+  }
+  addMsg('you', text, 'me'); save('you', text, 'me');
+  input.value = ''; input.disabled = true; btn.disabled = true; status.textContent = 'thinking…';
+  const toolsEl = addMsg('pi', '…', '');
+  const tools = [];
+  try {
+    const res = await fetch('/pi-chat/api/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Chat-Key': key},
+      body: JSON.stringify({conv, message: text})
+    });
+    if (res.status === 401) { key = ''; localStorage.removeItem('pichat_key'); toolsEl.textContent = 'Bad key — reload to retry.'; return; }
+    const data = await res.json();
+    if (data.tools && data.tools.length) toolsEl.textContent = data.tools.join('\n');
+    else toolsEl.remove();
+    if (data.error) { toolsEl.classList.add('err'); toolsEl.textContent = data.error; }
+    else toolsEl.textContent = data.text || '(empty)';
+    save('pi', toolsEl.textContent, '');
+  } catch (e) {
+    toolsEl.textContent = 'Network error: ' + e;
+    toolsEl.classList.add('err');
+  } finally {
+    input.disabled = false; btn.disabled = false; input.focus();
+    status.textContent = '·';
+  }
+}
+btn.onclick = send;
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+status.textContent = '·';
+render();
+</script>
+</body>
+</html>

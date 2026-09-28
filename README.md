@@ -52,6 +52,12 @@ contracts/
   GOAL_BRIEF.example.md the human-authored contract (objective, constraints, stop conditions)
 experiments/
   experiments.example.tsv the tabular experiment ledger (keep/discard/published)
+setup/
+  pi/                   full pi agent install: provider config, operator system-prompt
+                        template, tools extension (gh search fix), pitfalls
+  bridge/               pi-chat: ~170-line stdlib phone bridge to the agent + UI
+  hermes/               the supervisor platform wiring: watchdog cron, alert relay,
+                        division of labor (worker / shift boss / chief of staff)
 ```
 
 ## How the loop works
