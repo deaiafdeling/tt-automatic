@@ -1,14 +1,13 @@
 #!/bin/bash
 # Episodic turn launcher (Ralph/nightcrawler pattern): each turn is a FRESH pi
-TTA_HOME="${TTA_HOME:-$HOME}"   # root of your work tree; scripts below are relative to it
 # context; all state lives on disk (GOAL_BRIEF.md + KANBAN.md + git). Boots fast,
 # no context replay growth. Injects the driver's auto-answer when one is pending.
-export PATH="${TTA_HOME}/.local/bin:$PATH"
-source ${TTA_HOME}/tt-qwen-3.8-flash-next/python_env/bin/activate
-cd ${TTA_HOME}/tt-qwen-3.8-flash-next
-EP=$(cat ${TTA_HOME}/pi-overnight2-EP 2>/dev/null || echo 1)
-ANSWER=${TTA_HOME}/pi-overnight2-ANSWER.txt
-REORIENT=${TTA_HOME}/pi-overnight2-REORIENT
+export PATH="/home/ttuser/.local/bin:$PATH"
+source /home/ttuser/tt-qwen-3.8-flash-next/python_env/bin/activate
+cd /home/ttuser/tt-qwen-3.8-flash-next
+EP=$(cat /home/ttuser/pi-overnight2-EP 2>/dev/null || echo 1)
+ANSWER=/home/ttuser/pi-overnight2-ANSWER.txt
+REORIENT=/home/ttuser/pi-overnight2-REORIENT
 P="You are turn $EP of the overnight loop on the QuietBox Flash-Next speed mission. This episode is a FRESH context — all state lives on disk, so re-orient from files before anything else:
 1. cat ~/tt-contrib/GOAL_BRIEF.md  (the contract: objective, constraints, validation, stop conditions)
 2. tail -n 40 ~/tt-contrib/KANBAN.md  (landed work; the last lines are the live handoff — start from the newest NEXT)
@@ -31,6 +30,6 @@ $(cat "$ANSWER")
 $P"
   rm -f "$ANSWER"
 fi
-exec ${TTA_HOME}/.local/bin/pi --session-id "T24-overnight2-E$EP" \
-  --append-system-prompt ${TTA_HOME}/.pi/agent/APPEND_SYSTEM.md \
-  -p "$P"
+exec /home/ttuser/.local/bin/pi --session-id "T24-overnight2-E$EP" \
+  --append-system-prompt /home/ttuser/.pi/agent/APPEND_SYSTEM.md \
+  -p "$P" 2>> /home/ttuser/pi-overnight2-pi-stderr.log
